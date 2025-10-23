@@ -93,33 +93,46 @@ body {
 
 .database-info {
   background: #d4edda;
-  color: #155724;
-  padding: 12px;
   border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.database-status {
   display: flex;
   align-items: center;
   gap: 8px;
+  color: #155724;
   font-size: 14px;
-  flex: 1;
-  min-width: 200px;
+  font-weight: 500;
 }
 
 .btn-change-csv {
-  background: #6c757d;
+  background: #667eea;
   color: white;
   border: none;
-  padding: 12px 16px;
-  border-radius: 10px;
-  font-size: 14px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .btn-change-csv:hover {
-  background: #5a6268;
+  background: #5568d3;
   transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(102, 126, 234, 0.3);
 }
 
 .setup-container {
@@ -758,6 +771,20 @@ body {
 
   .main-content {
     padding: 16px;
+  }
+
+  .database-info {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .database-status {
+    justify-content: center;
+  }
+
+  .btn-change-csv {
+    width: 100%;
+    justify-content: center;
   }
 
   .book-info-card {
