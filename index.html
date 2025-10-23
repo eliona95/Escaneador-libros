@@ -682,9 +682,23 @@
                 </div>
               ) : (
                 <>
-                  <div className="database-info">
-                    <CheckCircle size={20} />
-                    <span>Base de datos cargada: {database.length} libros</span>
+                  <div className="database-info-container">
+                    <div className="database-info">
+                      <CheckCircle size={20} />
+                      <span>Base de datos cargada: {database.length} libros</span>
+                    </div>
+                    <button 
+                      className="btn-change-csv"
+                      onClick={() => {
+                        if (window.confirm('¿Quieres cargar un CSV diferente? Los datos actuales se reemplazarán.')) {
+                          setCsvLoaded(false);
+                          setDatabase([]);
+                          localStorage.removeItem('bookDatabase');
+                        }
+                      }}
+                    >
+                      🔄 Cambiar CSV
+                    </button>
                   </div>
 
                   {scanning ? (
@@ -783,3 +797,5 @@
     <link rel="stylesheet" href="styles.css">
 </body>
 </html>
+
+                  
