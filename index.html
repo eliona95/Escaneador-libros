@@ -123,8 +123,8 @@
                     
                     if (parts.length >= 2) {
                       books.push({
-                        author: parts[0] || '',
-                        title: parts[1] || '',
+                        title: parts[0] || '',
+                        author: parts[1] || '',
                         publisher: parts[2] || '',
                         year: parts[3] || ''
                       });
@@ -663,7 +663,7 @@
                     <Upload size={64} />
                     <h2>📚 Cargar Base de Datos</h2>
                     <p>Primero debes cargar tu archivo CSV con la base de datos de libros</p>
-                    <p className="setup-hint">Formato: Autor/a, Título, Editorial, Año</p>
+                    <p className="setup-hint">Formato: Título, Autor, Editorial, Año</p>
                     <input
                       type="file"
                       ref={fileInputRef}
@@ -682,23 +682,9 @@
                 </div>
               ) : (
                 <>
-                  <div className="database-info-container">
-                    <div className="database-info">
-                      <CheckCircle size={20} />
-                      <span>Base de datos cargada: {database.length} libros</span>
-                    </div>
-                    <button 
-                      className="btn-change-csv"
-                      onClick={() => {
-                        if (window.confirm('¿Quieres cargar un CSV diferente? Los datos actuales se reemplazarán.')) {
-                          setCsvLoaded(false);
-                          setDatabase([]);
-                          localStorage.removeItem('bookDatabase');
-                        }
-                      }}
-                    >
-                      🔄 Cambiar CSV
-                    </button>
+                  <div className="database-info">
+                    <CheckCircle size={20} />
+                    <span>Base de datos cargada: {database.length} libros</span>
                   </div>
 
                   {scanning ? (
