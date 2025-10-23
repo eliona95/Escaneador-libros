@@ -683,8 +683,18 @@
               ) : (
                 <>
                   <div className="database-info">
-                    <CheckCircle size={20} />
-                    <span>Base de datos cargada: {database.length} libros</span>
+                    <div className="database-status">
+                      <CheckCircle size={20} />
+                      <span>Base de datos cargada: {database.length} libros</span>
+                    </div>
+                    <button 
+                      className="btn-change-csv"
+                      onClick={() => fileInputRef.current.click()}
+                      title="Cargar un nuevo archivo CSV"
+                    >
+                      <Upload size={18} />
+                      Cambiar CSV
+                    </button>
                   </div>
 
                   {scanning ? (
