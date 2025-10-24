@@ -43,10 +43,12 @@
           const [scannedBooks, setScannedBooks] = useState([]);
           const [currentBook, setCurrentBook] = useState(null);
           const [loading, setLoading] = useState(false);
+          const [loadingMessage, setLoadingMessage] = useState('Buscando información...');
           const [view, setView] = useState('scanner');
           const [csvLoaded, setCsvLoaded] = useState(false);
           const [scanning, setScanning] = useState(false);
           const [lastScanned, setLastScanned] = useState('');
+          const [debugMode, setDebugMode] = useState(false);
           
           const fileInputRef = useRef(null);
           const scannerRef = useRef(null);
@@ -56,17 +58,27 @@
             const savedScanned = localStorage.getItem('scannedBooks');
             
             if (savedDatabase) {
-              setDatabase(JSON.parse(savedDatabase));
-              setCsvLoaded(true);
+              try {
+                const parsed = JSON.parse(savedDatabase);
+                setDatabase(parsed);
+                setCsvLoaded(true);
+                console.log(`✅ Base de datos cargada: ${parsed.length} libros`);
+              } catch (e) {
+                console.error('Error al cargar base de datos:', e);
+              }
             }
             if (savedScanned) {
-              setScannedBooks(JSON.parse(savedScanned));
+              try {
+                setScannedBooks(JSON.parse(savedScanned));
+              } catch (e) {
+                console.error('Error al cargar historial:', e);
+              }
             }
 
             // Registrar Service Worker
             if ('serviceWorker' in navigator) {
-              navigator.serviceWorker.register('./sw.js').then(() => {
-                console.log('Service Worker registrado');
+              navigator.serviceWorker.register('./sw.js').catch(() => {
+                console.log('Service Worker no disponible');
               });
             }
           }, []);
@@ -91,18 +103,48 @@
             };
           }, []);
 
+          // Función mejorada de carga de CSV
           const handleFileUpload = (event) => {
             const file = event.target.files[0];
-            if (file) {
-              const reader = new FileReader();
-              reader.onload = (e) => {
+            if (!file) {
+              alert('⚠️ No se seleccionó ningún archivo');
+              return;
+            }
+
+            if (!file.name.endsWith('.csv')) {
+              alert('⚠️ Por favor selecciona un archivo CSV válido');
+              return;
+            }
+
+            console.log(`📄 Cargando archivo: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`);
+            
+            const reader = new FileReader();
+            
+            reader.onerror = () => {
+              alert('❌ Error al leer el archivo. Verifica que sea un archivo CSV válido.');
+              console.error('Error en FileReader');
+            };
+            
+            reader.onload = (e) => {
+              try {
                 const text = e.target.result;
                 const lines = text.split('\n');
-                const books = [];
                 
+                if (lines.length < 2) {
+                  alert('⚠️ El archivo CSV está vacío o no tiene el formato correcto');
+                  return;
+                }
+                
+                console.log(`📊 Procesando ${lines.length} líneas...`);
+                const books = [];
+                let errores = 0;
+                
+                // Saltar la primera línea (encabezados)
                 for (let i = 1; i < lines.length; i++) {
                   const line = lines[i].trim();
-                  if (line) {
+                  if (!line) continue;
+                  
+                  try {
                     const parts = [];
                     let currentField = '';
                     let inQuotes = false;
@@ -128,27 +170,76 @@
                         publisher: parts[2] || '',
                         year: parts[3] || ''
                       });
+                    } else {
+                      errores++;
                     }
+                  } catch (parseError) {
+                    errores++;
+                    console.warn(`Línea ${i + 1} con error:`, line.substring(0, 50));
                   }
+                }
+                
+                if (books.length === 0) {
+                  alert('❌ No se pudo cargar ningún libro del CSV. Verifica el formato:\ntitulo,autor,editorial,año');
+                  return;
                 }
                 
                 setDatabase(books);
                 setCsvLoaded(true);
-                alert(`✅ Base de datos cargada: ${books.length} libros`);
-              };
-              reader.readAsText(file);
-            }
+                
+                let mensaje = `✅ Base de datos cargada: ${books.length} libros`;
+                if (errores > 0) {
+                  mensaje += `\n⚠️ ${errores} líneas con errores fueron ignoradas`;
+                }
+                alert(mensaje);
+                console.log(`✅ ${books.length} libros cargados correctamente`);
+                if (errores > 0) console.warn(`⚠️ ${errores} líneas con errores`);
+                
+              } catch (error) {
+                console.error('Error al procesar CSV:', error);
+                alert('❌ Error al procesar el archivo CSV. Verifica que el formato sea correcto.');
+              }
+            };
+            
+            reader.readAsText(file, 'UTF-8');
           };
 
+          // Normalización de texto mejorada
           const normalizeText = (text) => {
             if (!text) return '';
             return text.toLowerCase()
               .normalize("NFD")
               .replace(/[\u0300-\u036f]/g, "")
-              .replace(/[^\w\s]/g, '')
+              .replace(/[^\w\s]/g, ' ')
+              .replace(/\s+/g, ' ')
               .trim();
           };
 
+          // Normalización de ISBN
+          const normalizeISBN = (isbn) => {
+            if (!isbn) return '';
+            // Eliminar guiones, espacios y otros caracteres no numéricos
+            let normalized = isbn.replace(/[^0-9X]/gi, '').toUpperCase();
+            
+            // Si es ISBN-10, convertir a ISBN-13
+            if (normalized.length === 10) {
+              // Remover el último dígito (checksum)
+              const isbn10 = normalized.slice(0, 9);
+              // Añadir prefijo 978
+              normalized = '978' + isbn10;
+              // Calcular nuevo checksum (simplificado)
+              let sum = 0;
+              for (let i = 0; i < 12; i++) {
+                sum += parseInt(normalized[i]) * (i % 2 === 0 ? 1 : 3);
+              }
+              const checksum = (10 - (sum % 10)) % 10;
+              normalized += checksum;
+            }
+            
+            return normalized;
+          };
+
+          // Cálculo de similitud mejorado
           const calculateSimilarity = (str1, str2) => {
             const s1 = normalizeText(str1);
             const s2 = normalizeText(str2);
@@ -156,17 +247,46 @@
             if (s1 === s2) return 1;
             if (!s1 || !s2) return 0;
             
-            if (s1.includes(s2) || s2.includes(s1)) return 0.8;
+            // Coincidencia completa de uno en otro
+            if (s1.includes(s2) || s2.includes(s1)) return 0.95;
             
-            const words1 = s1.split(/\s+/);
-            const words2 = s2.split(/\s+/);
+            const words1 = s1.split(/\s+/).filter(w => w.length > 0);
+            const words2 = s2.split(/\s+/).filter(w => w.length > 0);
+            
+            if (words1.length === 0 || words2.length === 0) return 0;
             
             let matches = 0;
+            const usedWords = new Set();
+            
             for (const word1 of words1) {
-              for (const word2 of words2) {
-                if (word1 === word2 || word1.includes(word2) || word2.includes(word1)) {
-                  matches++;
+              for (let i = 0; i < words2.length; i++) {
+                if (usedWords.has(i)) continue;
+                const word2 = words2[i];
+                
+                if (word1 === word2) {
+                  matches += 1;
+                  usedWords.add(i);
                   break;
+                } else if (word1.length > 3 && word2.length > 3) {
+                  if (word1.includes(word2) || word2.includes(word1)) {
+                    matches += 0.8;
+                    usedWords.add(i);
+                    break;
+                  }
+                  // Similitud de Levenshtein simplificada para palabras largas
+                  const maxLen = Math.max(word1.length, word2.length);
+                  const minLen = Math.min(word1.length, word2.length);
+                  if (minLen / maxLen > 0.7) {
+                    let commonChars = 0;
+                    for (let j = 0; j < minLen; j++) {
+                      if (word1[j] === word2[j]) commonChars++;
+                    }
+                    if (commonChars / maxLen > 0.7) {
+                      matches += 0.6;
+                      usedWords.add(i);
+                      break;
+                    }
+                  }
                 }
               }
             }
@@ -174,10 +294,18 @@
             return matches / Math.max(words1.length, words2.length);
           };
 
+          // Sistema de búsqueda mejorado con múltiples estrategias
           const findMatches = (bookInfo) => {
+            if (!bookInfo || !bookInfo.title || database.length === 0) {
+              return { type: 'none', matches: [], debug: 'Sin información o base de datos vacía' };
+            }
+
             const scannedTitle = normalizeText(bookInfo.title);
             const scannedAuthor = normalizeText(bookInfo.author);
             
+            console.log(`🔍 Buscando: "${bookInfo.title}" por "${bookInfo.author}"`);
+            
+            // Estrategia 1: Coincidencia exacta (título Y autor)
             const exactMatch = database.find(book => {
               const dbTitle = normalizeText(book.title);
               const dbAuthor = normalizeText(book.author);
@@ -185,115 +313,259 @@
             });
 
             if (exactMatch) {
-              return { type: 'exact', matches: [exactMatch] };
+              console.log('✅ Coincidencia exacta encontrada');
+              return { type: 'exact', matches: [exactMatch], debug: 'Coincidencia exacta: título + autor' };
             }
 
+            // Estrategia 2: Título casi perfecto (≥90%)
+            const titleOnlyMatches = database.filter(book => {
+              const titleSim = calculateSimilarity(book.title, bookInfo.title);
+              return titleSim >= 0.90;
+            });
+
+            if (titleOnlyMatches.length > 0) {
+              titleOnlyMatches.sort((a, b) => {
+                const simA = calculateSimilarity(a.title, bookInfo.title) + 
+                             (calculateSimilarity(a.author, bookInfo.author) * 0.2);
+                const simB = calculateSimilarity(b.title, bookInfo.title) + 
+                             (calculateSimilarity(b.author, bookInfo.author) * 0.2);
+                return simB - simA;
+              });
+              console.log('✅ Coincidencia por título casi perfecto (≥90%)');
+              return { type: 'exact', matches: [titleOnlyMatches[0]], debug: 'Título ≥90% similar' };
+            }
+
+            // Estrategia 3: Título muy similar (≥80%)
+            const veryGoodMatches = database.filter(book => {
+              const titleSim = calculateSimilarity(book.title, bookInfo.title);
+              return titleSim >= 0.80;
+            });
+
+            if (veryGoodMatches.length > 0) {
+              veryGoodMatches.sort((a, b) => {
+                const simA = (calculateSimilarity(a.title, bookInfo.title) * 0.7) + 
+                             (calculateSimilarity(a.author, bookInfo.author) * 0.3);
+                const simB = (calculateSimilarity(b.title, bookInfo.title) * 0.7) + 
+                             (calculateSimilarity(b.author, bookInfo.author) * 0.3);
+                return simB - simA;
+              });
+              
+              const best = veryGoodMatches[0];
+              const bestAuthorSim = calculateSimilarity(best.author, bookInfo.author);
+              
+              if (bestAuthorSim >= 0.6) {
+                console.log('✅ Coincidencia por título + autor (80%/60%)');
+                return { type: 'exact', matches: [best], debug: 'Título ≥80% + autor ≥60%' };
+              }
+              
+              console.log('⚠️ Similares encontrados (título ≥80%)');
+              return { type: 'similar', matches: veryGoodMatches.slice(0, 3), debug: 'Título ≥80%' };
+            }
+
+            // Estrategia 4: Búsqueda flexible (≥70% título O combinación)
             const similarMatches = database.filter(book => {
               const titleSimilarity = calculateSimilarity(book.title, bookInfo.title);
               const authorSimilarity = calculateSimilarity(book.author, bookInfo.author);
               
-              return (titleSimilarity > 0.7 && authorSimilarity > 0.4) ||
-                     (titleSimilarity > 0.4 && authorSimilarity > 0.7);
-            });
-
-            similarMatches.sort((a, b) => {
-              const simA = calculateSimilarity(a.title, bookInfo.title) + 
-                           calculateSimilarity(a.author, bookInfo.author);
-              const simB = calculateSimilarity(b.title, bookInfo.title) + 
-                           calculateSimilarity(b.author, bookInfo.author);
-              return simB - simA;
+              return titleSimilarity >= 0.70 || 
+                     (titleSimilarity >= 0.60 && authorSimilarity >= 0.60);
             });
 
             if (similarMatches.length > 0) {
-              return { type: 'similar', matches: similarMatches.slice(0, 3) };
+              similarMatches.sort((a, b) => {
+                const simA = (calculateSimilarity(a.title, bookInfo.title) * 0.7) + 
+                             (calculateSimilarity(a.author, bookInfo.author) * 0.3);
+                const simB = (calculateSimilarity(b.title, bookInfo.title) * 0.7) + 
+                             (calculateSimilarity(b.author, bookInfo.author) * 0.3);
+                return simB - simA;
+              });
+              
+              console.log(`⚠️ ${similarMatches.length} similares encontrados (≥70%)` );
+              return { type: 'similar', matches: similarMatches.slice(0, 3), debug: 'Similitud flexible' };
             }
 
-            return { type: 'none', matches: [] };
+            // Estrategia 5: Búsqueda por palabras clave importantes
+            const titleWords = scannedTitle.split(/\s+/).filter(w => w.length > 3);
+            if (titleWords.length >= 2) {
+              const keywordMatches = database.filter(book => {
+                const dbTitle = normalizeText(book.title);
+                let matchCount = 0;
+                for (const word of titleWords) {
+                  if (dbTitle.includes(word)) matchCount++;
+                }
+                return matchCount >= Math.max(2, Math.ceil(titleWords.length * 0.6));
+              });
+
+              if (keywordMatches.length > 0) {
+                keywordMatches.sort((a, b) => {
+                  const simA = calculateSimilarity(a.title, bookInfo.title);
+                  const simB = calculateSimilarity(b.title, bookInfo.title);
+                  return simB - simA;
+                });
+                console.log(`⚠️ ${keywordMatches.length} coincidencias por palabras clave`);
+                return { type: 'similar', matches: keywordMatches.slice(0, 3), debug: 'Palabras clave' };
+              }
+            }
+
+            console.log('❌ No se encontraron coincidencias');
+            return { type: 'none', matches: [], debug: 'Sin coincidencias en ninguna estrategia' };
           };
 
+          // Búsqueda MEJORADA en APIs externas
           const fetchBookInfo = async (isbn) => {
             setLoading(true);
+            setLoadingMessage('Buscando en Google Books...');
+            
+            const normalizedISBN = normalizeISBN(isbn);
+            console.log(`📖 Buscando ISBN: ${isbn} (normalizado: ${normalizedISBN})`);
             
             try {
-              const googleResponse = await fetch(
-                `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`
-              );
-              const googleData = await googleResponse.json();
-              
-              if (googleData.items && googleData.items.length > 0) {
-                const book = googleData.items[0].volumeInfo;
-                const bookInfo = {
-                  isbn: isbn,
-                  title: book.title || 'Título desconocido',
-                  author: book.authors ? book.authors.join(', ') : 'Autor desconocido',
-                  publisher: book.publisher || '',
-                  year: book.publishedDate ? book.publishedDate.split('-')[0] : '',
-                  cover: book.imageLinks?.thumbnail || book.imageLinks?.smallThumbnail || '',
-                  scannedAt: new Date().toISOString(),
-                  folder: 'pending'
-                };
+              // Intento 1: Google Books API con ISBN normalizado
+              try {
+                setLoadingMessage('Consultando Google Books...');
+                const googleResponse = await fetch(
+                  `https://www.googleapis.com/books/v1/volumes?q=isbn:${normalizedISBN}`,
+                  { timeout: 10000 }
+                );
                 
-                const matchResult = findMatches(bookInfo);
-                bookInfo.matchType = matchResult.type;
-                bookInfo.matches = matchResult.matches;
-                
-                setCurrentBook(bookInfo);
-                setLoading(false);
-                return bookInfo;
+                if (googleResponse.ok) {
+                  const googleData = await googleResponse.json();
+                  
+                  if (googleData.items && googleData.items.length > 0) {
+                    const book = googleData.items[0].volumeInfo;
+                    console.log('✅ Encontrado en Google Books:', book.title);
+                    
+                    const bookInfo = {
+                      isbn: isbn,
+                      title: book.title || 'Título desconocido',
+                      author: book.authors ? book.authors.join(', ') : '',
+                      publisher: book.publisher || '',
+                      year: book.publishedDate ? book.publishedDate.split('-')[0] : '',
+                      cover: book.imageLinks?.thumbnail?.replace('http:', 'https:') || 
+                             book.imageLinks?.smallThumbnail?.replace('http:', 'https:') || '',
+                      scannedAt: new Date().toISOString(),
+                      folder: 'pending',
+                      source: 'Google Books'
+                    };
+                    
+                    // Si no hay autor, intentar otros métodos
+                    if (!bookInfo.author || bookInfo.author === '') {
+                      console.log('⚠️ Sin autor en Google Books, intentando Open Library...');
+                      try {
+                        const olData = await fetchOpenLibrary(normalizedISBN);
+                        if (olData && olData.author) {
+                          bookInfo.author = olData.author;
+                          console.log('✅ Autor encontrado en Open Library:', olData.author);
+                        }
+                      } catch (e) {
+                        console.log('❌ Open Library fallido');
+                      }
+                    }
+                    
+                    const matchResult = findMatches(bookInfo);
+                    bookInfo.matchType = matchResult.type;
+                    bookInfo.matches = matchResult.matches;
+                    bookInfo.debugInfo = matchResult.debug;
+                    
+                    setCurrentBook(bookInfo);
+                    setLoading(false);
+                    return bookInfo;
+                  }
+                }
+              } catch (googleError) {
+                console.warn('Google Books falló:', googleError.message);
               }
 
-              const openLibResponse = await fetch(
-                `https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`
-              );
-              const openLibData = await openLibResponse.json();
-              const bookKey = `ISBN:${isbn}`;
-              
-              if (openLibData[bookKey]) {
-                const book = openLibData[bookKey];
-                const bookInfo = {
-                  isbn: isbn,
-                  title: book.title || 'Título desconocido',
-                  author: book.authors ? book.authors.map(a => a.name).join(', ') : 'Autor desconocido',
-                  publisher: book.publishers ? book.publishers[0].name : '',
-                  year: book.publish_date || '',
-                  cover: book.cover?.large || book.cover?.medium || book.cover?.small || '',
-                  scannedAt: new Date().toISOString(),
-                  folder: 'pending'
-                };
+              // Intento 2: Open Library API
+              setLoadingMessage('Consultando Open Library...');
+              const olData = await fetchOpenLibrary(normalizedISBN);
+              if (olData) {
+                console.log('✅ Encontrado en Open Library:', olData.title);
+                const matchResult = findMatches(olData);
+                olData.matchType = matchResult.type;
+                olData.matches = matchResult.matches;
+                olData.debugInfo = matchResult.debug;
                 
-                const matchResult = findMatches(bookInfo);
-                bookInfo.matchType = matchResult.type;
-                bookInfo.matches = matchResult.matches;
-                
-                setCurrentBook(bookInfo);
+                setCurrentBook(olData);
                 setLoading(false);
-                return bookInfo;
+                return olData;
               }
 
+              // Intento 3: Buscar con ISBN original (sin normalizar)
+              if (isbn !== normalizedISBN) {
+                console.log('Intentando con ISBN original...');
+                setLoadingMessage('Reintentando con ISBN original...');
+                
+                try {
+                  const googleRetry = await fetch(
+                    `https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}`
+                  );
+                  
+                  if (googleRetry.ok) {
+                    const data = await googleRetry.json();
+                    if (data.items && data.items.length > 0) {
+                      const book = data.items[0].volumeInfo;
+                      console.log('✅ Encontrado con ISBN original:', book.title);
+                      
+                      const bookInfo = {
+                        isbn: isbn,
+                        title: book.title || 'Título desconocido',
+                        author: book.authors ? book.authors.join(', ') : 'Autor no disponible',
+                        publisher: book.publisher || '',
+                        year: book.publishedDate ? book.publishedDate.split('-')[0] : '',
+                        cover: book.imageLinks?.thumbnail?.replace('http:', 'https:') || '',
+                        scannedAt: new Date().toISOString(),
+                        folder: 'pending',
+                        source: 'Google Books (ISBN original)'
+                      };
+                      
+                      const matchResult = findMatches(bookInfo);
+                      bookInfo.matchType = matchResult.type;
+                      bookInfo.matches = matchResult.matches;
+                      bookInfo.debugInfo = matchResult.debug;
+                      
+                      setCurrentBook(bookInfo);
+                      setLoading(false);
+                      return bookInfo;
+                    }
+                  }
+                } catch (e) {
+                  console.log('Reintento con ISBN original falló');
+                }
+              }
+
+              // Si todo falla, crear entrada con ISBN
+              console.log('❌ No encontrado en ninguna API');
+              setLoadingMessage('No encontrado en bases de datos...');
+              
               const bookInfo = {
                 isbn: isbn,
-                title: `Libro ISBN: ${isbn}`,
-                author: 'Información no disponible',
+                title: `ISBN: ${isbn}`,
+                author: 'No disponible en bases de datos',
                 publisher: '',
                 year: '',
                 cover: '',
                 scannedAt: new Date().toISOString(),
-                folder: 'pending'
+                folder: 'pending',
+                source: 'Manual',
+                notFound: true
               };
               
+              // Aún así intentamos buscar en nuestra BD
               const matchResult = findMatches(bookInfo);
               bookInfo.matchType = matchResult.type;
               bookInfo.matches = matchResult.matches;
+              bookInfo.debugInfo = matchResult.debug || 'No encontrado en APIs externas';
               
               setCurrentBook(bookInfo);
               setLoading(false);
               return bookInfo;
               
             } catch (error) {
-              console.error('Error fetching book info:', error);
+              console.error('❌ Error general en fetchBookInfo:', error);
               const bookInfo = {
                 isbn: isbn,
-                title: `Libro ISBN: ${isbn}`,
+                title: `ISBN: ${isbn}`,
                 author: 'Error al obtener información',
                 publisher: '',
                 year: '',
@@ -301,12 +573,49 @@
                 scannedAt: new Date().toISOString(),
                 folder: 'pending',
                 matchType: 'none',
-                matches: []
+                matches: [],
+                source: 'Error',
+                error: true
               };
               setCurrentBook(bookInfo);
               setLoading(false);
               return bookInfo;
             }
+          };
+
+          // Función auxiliar para Open Library
+          const fetchOpenLibrary = async (isbn) => {
+            try {
+              const response = await fetch(
+                `https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`,
+                { timeout: 10000 }
+              );
+              
+              if (!response.ok) return null;
+              
+              const data = await response.json();
+              const bookKey = `ISBN:${isbn}`;
+              
+              if (data[bookKey]) {
+                const book = data[bookKey];
+                return {
+                  isbn: isbn,
+                  title: book.title || 'Título desconocido',
+                  author: book.authors ? book.authors.map(a => a.name).join(', ') : '',
+                  publisher: book.publishers ? book.publishers.map(p => p.name).join(', ') : '',
+                  year: book.publish_date || '',
+                  cover: book.cover?.large?.replace('http:', 'https:') || 
+                         book.cover?.medium?.replace('http:', 'https:') || 
+                         book.cover?.small?.replace('http:', 'https:') || '',
+                  scannedAt: new Date().toISOString(),
+                  folder: 'pending',
+                  source: 'Open Library'
+                };
+              }
+            } catch (error) {
+              console.warn('Open Library error:', error.message);
+            }
+            return null;
           };
 
           const startScanner = () => {
@@ -330,10 +639,10 @@
                       facingMode: "environment"
                     },
                     area: {
-                      top: "20%",
+                      top: "15%",
                       right: "10%",
                       left: "10%",
-                      bottom: "20%"
+                      bottom: "15%"
                     }
                   },
                   locator: {
@@ -354,11 +663,12 @@
                   frequency: 10
                 }, (err) => {
                   if (err) {
-                    console.error(err);
+                    console.error('Error Quagga:', err);
                     alert('❌ Error al acceder a la cámara. Asegúrate de dar permisos.');
                     setScanning(false);
                     return;
                   }
+                  console.log('✅ Escáner iniciado');
                   window.Quagga.start();
                 });
 
@@ -366,9 +676,12 @@
                   if (result && result.codeResult && result.codeResult.code) {
                     const code = result.codeResult.code;
                     
+                    // Validar ISBN: 10 o 13 dígitos
                     if (/^\d{10}(\d{3})?$/.test(code) && code !== lastScanned) {
+                      console.log(`📱 Código escaneado: ${code}`);
                       setLastScanned(code);
                       
+                      // Sonido de confirmación
                       try {
                         const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                         const oscillator = audioContext.createOscillator();
@@ -381,20 +694,20 @@
                         oscillator.type = 'sine';
                         
                         gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
                         
                         oscillator.start(audioContext.currentTime);
-                        oscillator.stop(audioContext.currentTime + 0.1);
+                        oscillator.stop(audioContext.currentTime + 0.2);
                       } catch (e) {
                         console.log('Audio no disponible');
                       }
                       
-                      if (navigator.vibrate) {
-                        navigator.vibrate(100);
-                      }
-                      
                       stopScanner();
                       fetchBookInfo(code);
+                      
+                      setTimeout(() => {
+                        setLastScanned('');
+                      }, 3000);
                     }
                   }
                 });
@@ -405,63 +718,40 @@
           const stopScanner = () => {
             if (window.Quagga) {
               window.Quagga.stop();
+              console.log('⏹️ Escáner detenido');
             }
             setScanning(false);
-            setLastScanned('');
           };
 
           const archiveBook = (folder) => {
-            if (!currentBook) return;
-
-            const isDuplicate = scannedBooks.find(book => 
-              book.isbn === currentBook.isbn
-            );
-
-            if (isDuplicate) {
-              alert('⚠️ Este libro ya fue escaneado y archivado anteriormente');
-              return;
+            if (currentBook) {
+              const updated = { ...currentBook, folder: folder };
+              setScannedBooks(prev => [...prev, updated]);
+              setCurrentBook(null);
+              console.log(`📂 Libro archivado en: ${folder}`);
             }
-
-            const updatedBook = { ...currentBook, folder: folder };
-            setScannedBooks(prev => [...prev, updatedBook]);
-            
-            const folderName = folder === 'match' ? 'COINCIDENCIAS ✅' : 'NO COINCIDENCIAS ❌';
-            alert(`📂 Libro archivado en:\n${folderName}`);
-            
-            setCurrentBook(null);
           };
 
           const exportToCSV = () => {
-            const headers = ['Carpeta', 'Estado', 'Título', 'Autor', 'ISBN', 'Editorial', 'Año'];
-            const rows = scannedBooks.map(book => {
-              const folder = book.folder === 'match' ? '📂 COINCIDENCIAS' : 
-                             book.folder === 'nomatch' ? '📂 NO COINCIDENCIAS' : '⏳ PENDIENTE';
-              const status = book.folder === 'match' ? '✅ En tu base de datos' : 
-                             book.folder === 'nomatch' ? '❌ NO en tu base de datos' : '⏳ Sin archivar';
-              
-              return [
-                folder,
-                status,
-                book.title,
-                book.author,
-                book.isbn,
-                book.publisher,
-                book.year
-              ].map(field => `"${field}"`).join(',');
-            });
+            if (scannedBooks.length === 0) {
+              alert('⚠️ No hay libros escaneados para exportar');
+              return;
+            }
 
-            const csv = [headers.join(','), ...rows].join('\n');
+            const headers = 'ISBN,Título,Autor,Editorial,Año,Estado,Fecha\n';
+            const rows = scannedBooks.map(book => {
+              const estado = book.folder === 'match' ? 'Coincide' : 
+                           book.folder === 'nomatch' ? 'No Coincide' : 'Pendiente';
+              return `"${book.isbn}","${book.title}","${book.author}","${book.publisher}","${book.year}","${estado}","${new Date(book.scannedAt).toLocaleDateString()}"`;
+            }).join('\n');
+
+            const csv = headers + rows;
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement('a');
             link.href = URL.createObjectURL(blob);
-            link.download = `libros_escaneados_${new Date().toISOString().split('T')[0]}.csv`;
+            link.download = `escaneo_libros_${new Date().toISOString().slice(0, 10)}.csv`;
             link.click();
-
-            const matches = scannedBooks.filter(b => b.folder === 'match').length;
-            const noMatches = scannedBooks.filter(b => b.folder === 'nomatch').length;
-            const pending = scannedBooks.filter(b => b.folder === 'pending').length;
-
-            alert(`📊 Resumen de Exportación\n\n✅ Coincidencias: ${matches}\n❌ NO Coincidencias: ${noMatches}\n⏳ Pendientes: ${pending}\n━━━━━━━━━━━━━━━\n📚 Total escaneados: ${scannedBooks.length}\n\n✅ Archivo CSV descargado`);
+            console.log(`📤 Exportados ${scannedBooks.length} libros`);
           };
 
           const ResultView = () => {
@@ -469,72 +759,65 @@
 
             return (
               <div className="result-container">
-                <div className={`match-header ${currentBook.matchType === 'exact' ? 'exact-match' : currentBook.matchType === 'similar' ? 'similar-match' : 'no-match'}`}>
+                <div className={`match-header ${
+                  currentBook.matchType === 'exact' ? 'exact-match' : 
+                  currentBook.matchType === 'similar' ? 'similar-match' : 'no-match'
+                }`}>
                   {currentBook.matchType === 'exact' && (
-                    <>
-                      <CheckCircle size={32} />
-                      <h2>COINCIDENCIA EXACTA</h2>
-                    </>
+                    <><CheckCircle size={24} /><h2>✅ ENCONTRADO</h2></>
                   )}
                   {currentBook.matchType === 'similar' && (
-                    <>
-                      <AlertCircle size={32} />
-                      <h2>POSIBLES COINCIDENCIAS</h2>
-                    </>
+                    <><AlertCircle size={24} /><h2>⚠️ SIMILARES</h2></>
                   )}
                   {currentBook.matchType === 'none' && (
-                    <>
-                      <XCircle size={32} />
-                      <h2>NO ENCONTRADO</h2>
-                    </>
+                    <><XCircle size={24} /><h2>❌ NO ENCONTRADO</h2></>
                   )}
                 </div>
 
                 <div className="book-info-card">
                   {currentBook.cover ? (
-                    <img src={currentBook.cover} alt={currentBook.title} className="book-cover" />
+                    <img src={currentBook.cover} alt="Portada" className="book-cover" />
                   ) : (
                     <div className="book-cover-placeholder">
                       <BookOpen size={48} />
                     </div>
                   )}
-                  
                   <div className="book-details">
                     <h3>{currentBook.title}</h3>
-                    <p className="author">{currentBook.author}</p>
-                    {currentBook.publisher && <p className="publisher">{currentBook.publisher}, {currentBook.year}</p>}
-                    <p className="isbn">ISBN: {currentBook.isbn}</p>
+                    <p className="author">✍️ {currentBook.author || 'Autor desconocido'}</p>
+                    {currentBook.publisher && (
+                      <p className="publisher">🏢 {currentBook.publisher}</p>
+                    )}
+                    {currentBook.year && (
+                      <p className="publisher">📅 {currentBook.year}</p>
+                    )}
+                    <p className="isbn">📖 ISBN: {currentBook.isbn}</p>
+                    {currentBook.source && (
+                      <p className="isbn" style={{marginTop: '8px', color: '#999'}}>
+                        🔍 Fuente: {currentBook.source}
+                      </p>
+                    )}
                   </div>
                 </div>
 
-                {currentBook.matchType === 'exact' && (
+                {currentBook.matches && currentBook.matches.length > 0 && (
                   <div className="match-details">
-                    <div className="match-banner">
-                      ✨ Coincidencia exacta en tu base de datos:
+                    <div className={`match-banner ${currentBook.matchType === 'exact' ? '' : 'warning'}`}>
+                      {currentBook.matchType === 'exact' ? 
+                        '✅ Este libro está en tu base de datos' : 
+                        `⚠️ Encontrados ${currentBook.matches.length} libro(s) similar(es) en tu BD`}
                     </div>
-                    {currentBook.matches.map((match, idx) => (
-                      <div key={idx} className="match-item">
-                        <p><strong>📖 {match.title}</strong></p>
-                        <p>👤 {match.author}</p>
-                        <p>🏢 {match.publisher}{match.year ? `, ${match.year}` : ''}</p>
+                    {currentBook.matches.slice(0, 3).map((match, i) => (
+                      <div key={i} className="match-item">
+                        <p><strong>📚 {match.title}</strong></p>
+                        <p>✍️ {match.author}</p>
+                        {match.publisher && <p>🏢 {match.publisher}</p>}
+                        {match.year && <p>📅 {match.year}</p>}
                       </div>
                     ))}
-                  </div>
-                )}
-
-                {currentBook.matchType === 'similar' && (
-                  <div className="match-details">
-                    <div className="match-banner warning">
-                      ⚠️ Encontramos coincidencias similares en tu base de datos:
-                    </div>
-                    {currentBook.matches.map((match, idx) => (
-                      <div key={idx} className="match-item">
-                        <p><strong>📖 {match.title}</strong></p>
-                        <p>👤 {match.author}</p>
-                        <p>🏢 {match.publisher}{match.year ? `, ${match.year}` : ''}</p>
-                      </div>
-                    ))}
-                    <p className="match-question">¿Es alguno de estos el mismo libro?</p>
+                    {currentBook.matchType === 'similar' && (
+                      <p className="match-question">¿Es alguno de estos tu libro?</p>
+                    )}
                   </div>
                 )}
 
@@ -543,7 +826,22 @@
                     <div className="match-banner error">
                       ❌ Este libro NO está en tu base de datos
                     </div>
-                    <p>Debes añadirlo a tu CSV</p>
+                    <p style={{textAlign: 'center', margin: '12px 0', color: '#666'}}>
+                      Debes añadirlo a tu CSV
+                    </p>
+                  </div>
+                )}
+
+                {debugMode && currentBook.debugInfo && (
+                  <div style={{
+                    background: '#f8f9fa',
+                    padding: '12px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    color: '#666',
+                    marginTop: '12px'
+                  }}>
+                    🐛 Debug: {currentBook.debugInfo}
                   </div>
                 )}
 
@@ -552,19 +850,25 @@
                     className="btn-archive match"
                     onClick={() => archiveBook('match')}
                   >
+                    <CheckCircle size={20} />
                     📂 Coincide - Archivar
                   </button>
                   <button 
                     className="btn-archive nomatch"
                     onClick={() => archiveBook('nomatch')}
                   >
-                    ❌ No Coincide - Archivar
+                    <XCircle size={20} />
+                    📂 No Coincide - Archivar
                   </button>
                   <button 
                     className="btn-next"
-                    onClick={() => setCurrentBook(null)}
+                    onClick={() => {
+                      setCurrentBook(null);
+                      startScanner();
+                    }}
                   >
-                    ⏭️ Siguiente
+                    <Camera size={20} />
+                    📸 Siguiente
                   </button>
                 </div>
               </div>
@@ -572,28 +876,32 @@
           };
 
           const HistoryView = () => {
-            const groupedBooks = {
-              match: scannedBooks.filter(b => b.folder === 'match'),
-              nomatch: scannedBooks.filter(b => b.folder === 'nomatch'),
-              pending: scannedBooks.filter(b => b.folder === 'pending')
-            };
+            const matchCount = scannedBooks.filter(b => b.folder === 'match').length;
+            const nomatchCount = scannedBooks.filter(b => b.folder === 'nomatch').length;
+            const pendingCount = scannedBooks.filter(b => b.folder === 'pending').length;
 
             return (
               <div className="history-container">
-                <h2>📋 Historial de Escaneos</h2>
-                
+                <h2>
+                  <Clock size={28} />
+                  Historial de Escaneos
+                </h2>
+
                 <div className="stats">
                   <div className="stat-item match">
-                    <CheckCircle size={24} />
-                    <span>{groupedBooks.match.length} Coincidencias</span>
+                    <CheckCircle size={32} />
+                    <div style={{fontSize: '24px', fontWeight: 'bold'}}>{matchCount}</div>
+                    <span>Coinciden</span>
                   </div>
                   <div className="stat-item nomatch">
-                    <XCircle size={24} />
-                    <span>{groupedBooks.nomatch.length} No Coincidencias</span>
+                    <XCircle size={32} />
+                    <div style={{fontSize: '24px', fontWeight: 'bold'}}>{nomatchCount}</div>
+                    <span>No coinciden</span>
                   </div>
                   <div className="stat-item pending">
-                    <Clock size={24} />
-                    <span>{groupedBooks.pending.length} Pendientes</span>
+                    <Clock size={32} />
+                    <div style={{fontSize: '24px', fontWeight: 'bold'}}>{pendingCount}</div>
+                    <span>Pendientes</span>
                   </div>
                 </div>
 
@@ -601,11 +909,14 @@
                   <div className="empty-state">
                     <BookOpen size={64} />
                     <p>No hay libros escaneados aún</p>
+                    <p style={{fontSize: '14px', marginTop: '8px'}}>
+                      Ve a la pestaña Escanear para empezar
+                    </p>
                   </div>
                 ) : (
                   <div className="history-list">
-                    {[...scannedBooks].reverse().map((book, idx) => (
-                      <div key={idx} className={`history-item ${book.folder}`}>
+                    {[...scannedBooks].reverse().map((book, i) => (
+                      <div key={i} className={`history-item ${book.folder}`}>
                         <div className="history-cover">
                           {book.cover ? (
                             <img src={book.cover} alt={book.title} />
@@ -673,7 +984,7 @@
                     />
                     <button 
                       className="btn-upload"
-                      onClick={() => fileInputRef.current.click()}
+                      onClick={() => fileInputRef.current?.click()}
                     >
                       <Upload size={20} />
                       Seleccionar archivo CSV
@@ -689,12 +1000,19 @@
                     </div>
                     <button 
                       className="btn-change-csv"
-                      onClick={() => fileInputRef.current.click()}
+                      onClick={() => fileInputRef.current?.click()}
                       title="Cargar un nuevo archivo CSV"
                     >
                       <Upload size={18} />
                       Cambiar CSV
                     </button>
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept=".csv"
+                      onChange={handleFileUpload}
+                      style={{ display: 'none' }}
+                    />
                   </div>
 
                   {scanning ? (
@@ -714,7 +1032,10 @@
                   ) : loading ? (
                     <div className="loading">
                       <div className="spinner"></div>
-                      <p>Buscando información del libro...</p>
+                      <p>{loadingMessage}</p>
+                      <p style={{fontSize: '14px', color: '#999', marginTop: '8px'}}>
+                        Esto puede tardar unos segundos...
+                      </p>
                     </div>
                   ) : currentBook ? (
                     <ResultView />
@@ -740,6 +1061,21 @@
                           <li>✅ Mantén distancia de 10-15cm</li>
                         </ul>
                       </div>
+                      
+                      <button 
+                        style={{
+                          marginTop: '20px',
+                          background: 'none',
+                          border: 'none',
+                          color: '#999',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          textDecoration: 'underline'
+                        }}
+                        onClick={() => setDebugMode(!debugMode)}
+                      >
+                        {debugMode ? '🐛 Modo Debug ON' : 'Modo Debug'}
+                      </button>
                     </div>
                   )}
                 </>
